@@ -291,8 +291,7 @@ app.put(
 // ---------------- Health ----------------
 app.get(["/health", "/api/health"], (_req, res) => res.json({ ok: true }));
 
-// ---------------- Billing routes ----------------
-// DES Added: Cleaned up billing routes mounting to prevent conflicts
+// ---------------- Billing routes (unchanged) ----------------
 console.log(
 	"[server] requiring routes from",
 	path.resolve(__dirname, "./routes/billing.js")
@@ -307,17 +306,30 @@ const table = (billingRoutes.stack || [])
 	}));
 console.log("[server] billing route table:", table);
 
-// DES Added: Mount only on /api/billing to match frontend API calls
+// Mount on BOTH prefixes
 app.use("/api/billing", billingRoutes);
-console.log("[server] Billing routes mounted at /api/billing");
+app.use("/billing", billingRoutes);
+console.log("[server] Billing routes mounted at /api/billing and /billing");
 
-// DES Added: Debug middleware for billing requests
-app.use("/api/billing", (req, _res, next) => {
+// DEBUG: show requests as they enter the billing mount
+app.use("/billing", (req, _res, next) => {
 	console.log(
-		"[billing] incoming request:",
+		"[app] entering /billing:",
 		req.method,
 		req.originalUrl,
-		"body:", JSON.stringify(req.body, null, 2)
+		"url=",
+		req.url
+	);
+	next();
+});
+
+app.use("/billing", (req, _res, next) => {
+	console.log(
+		"[app] entering /billing mount:",
+		req.method,
+		req.originalUrl,
+		"url=",
+		req.url
 	);
 	next();
 });

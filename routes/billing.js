@@ -7,13 +7,23 @@ const router = express.Router();
 
 /** Sanitize the env var: strip quotes/whitespace */
 const rawKey = process.env.STRIPE_SECRET_KEY || "";
-const STRIPE_KEY = rawKey.replace(/^['"]|['"]$/g, "").trim();
+const STRIPE_KEY = rawKey.replace(/^['"]*|['"]*$/g, "").trim();
 console.log(
 	"[billing] key check:",
 	STRIPE_KEY.slice(0, 10) + "...",
 	"len=",
 	STRIPE_KEY.length
 );
+
+// DES Added: Validate Stripe key format and configuration
+if (!STRIPE_KEY || STRIPE_KEY.length < 10) {
+	console.error("[billing] ERROR: Invalid or missing STRIPE_SECRET_KEY!");
+	console.error("[billing] Please check your .env file");
+} else if (!STRIPE_KEY.startsWith('sk_')) {
+	console.error("[billing] ERROR: STRIPE_SECRET_KEY should start with 'sk_'");
+} else {
+	console.log("[billing] ✅ Stripe key appears valid");
+}
 
 const stripe = new Stripe(STRIPE_KEY, { apiVersion: "2024-06-20" });
 
@@ -54,21 +64,46 @@ router.get("/debug-key", (_req, res) =>
 // Create SetupIntent (save a card from the device)
 router.post("/setup-intent", async (req, res) => {
 	try {
+		// DES Added: Better validation and logging
+		console.log("[billing] setup-intent request from user:", req.user?.id);
+		
 		const userId = req.user?.id;
-		if (!userId) return res.status(401).json({ error: "Unauthorized" });
+		if (!userId) {
+			console.error("[billing] setup-intent: No user ID found");
+			return res.status(401).json({ error: "Unauthorized" });
+		}
+
+		// DES Added: Validate Stripe key before proceeding
+		if (!STRIPE_KEY || STRIPE_KEY.length < 10) {
+			console.error("[billing] setup-intent: Invalid Stripe key configuration");
+			return res.status(500).json({ error: "Payment service configuration error" });
+		}
 
 		const customerId = await getOrCreateStripeCustomerId(userId);
+		console.log("[billing] setup-intent: Creating for customer:", customerId);
+		
 		const si = await stripe.setupIntents.create({
 			customer: customerId,
 			usage: "off_session",
 			automatic_payment_methods: { enabled: true },
 		});
+		
+		console.log("[billing] setup-intent: Success", si.id);
 		res.json({ clientSecret: si.client_secret });
 	} catch (e) {
-		console.error("[billing] setup-intent error:", e);
+		// DES Added: More detailed error logging
+		console.error("[billing] setup-intent error:", {
+			message: e.message,
+			code: e.code,
+			type: e.type,
+			stack: e.stack
+		});
 		res
 			.status(400)
-			.json({ error: e.message || "Failed to create SetupIntent" });
+			.json({ 
+				error: e.message || "Failed to create SetupIntent",
+				code: e.code || 'unknown'
+			});
 	}
 });
 
