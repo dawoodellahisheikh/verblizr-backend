@@ -1,0 +1,234 @@
+Verblizr — Setup Docs (GCP + Backend + TTS)
+Backend root: ~/verblizr-backend | Frontend root: ~/verblizerRN
+Region: europe-west2 (London) | Project ID: verblizr-dev-uk
+
+-------------------------------------------------------------------------------
+0) Tools & CLI
+-------------------------------------------------------------------------------
+Install & init gcloud (one-time on your Mac)
+- Where to run: Terminal (any directory)
+- Files to change: none
+
+Commands (what each will do shown inline):
+  brew install --cask google-cloud-sdk
+    -> Installs 'gcloud' command.
+
+  source "$(brew --prefix)/Caskroom/google-cloud-sdk/latest/google-cloud-sdk/path.zsh.inc" 2>/dev/null || true
+  source "$(brew --prefix)/Caskroom/google-cloud-sdk/latest/google-cloud-sdk/completion.zsh.inc" 2>/dev/null || true
+    -> Adds gcloud to PATH and enables completions for this shell session.
+
+  gcloud init
+    -> Authenticates and lets you create/select your project config.
+
+-------------------------------------------------------------------------------
+1) GCP Project, Billing, Core APIs, ADC
+-------------------------------------------------------------------------------
+1.1 Set project and default regions
+- Where to run: Terminal
+- Files to change: none
+
+  gcloud config set project verblizr-dev-uk
+  gcloud config set compute/region europe-west2
+  gcloud config set run/region europe-west2
+    -> Targets our project and London region.
+
+1.2 Link billing & enable core APIs
+- Where to run: Terminal
+- Files to change: none
+
+  gcloud billing projects link verblizr-dev-uk --billing-account=017A79-40406D-CC3229
+    -> Links the project to your OPEN billing account.
+
+  gcloud services enable \
+    run.googleapis.com \
+    artifactregistry.googleapis.com \
+    cloudbuild.googleapis.com \
+    secretmanager.googleapis.com \
+    iam.googleapis.com \
+    iamcredentials.googleapis.com \
+    storage.googleapis.com \
+    logging.googleapis.com \
+    monitoring.googleapis.com \
+    cloudbilling.googleapis.com \
+    serviceusage.googleapis.com
+    -> Enables deploy/build/secrets/IAM/storage/logging/monitoring + billing + service usage.
+
+1.3 Local Application Default Credentials (ADC)
+- Where to run: Terminal
+- Files to change: none
+
+  gcloud auth application-default login
+    -> Stores local user credentials for Google SDKs (dev only).
+
+Notes we handled:
+- Enabled Service Usage API when billing check complained.
+- Installed gcloud beta component when required.
+
+-------------------------------------------------------------------------------
+2) Identity + Storage
+-------------------------------------------------------------------------------
+2.1 Service Account (least privilege)
+- SA: sa-verblizr-api@verblizr-dev-uk.iam.gserviceaccount.com
+- Project-level roles granted:
+  • roles/secretmanager.secretAccessor (read secrets)
+  • roles/logging.logWriter (write logs)
+  • roles/monitoring.metricWriter (write metrics)
+- User impersonation (local dev): roles/iam.serviceAccountTokenCreator on the SA.
+
+2.2 Buckets (London) + Lifecycle + Bucket-scoped IAM
+- Buckets:
+  • Uploads (temp):   gs://verblizr-dev-uk-uploads-uk
+      - Lifecycle: Delete objects after 90 days
+      - UBLA + Public Access Prevention enabled
+  • Artifacts (long-lived): gs://verblizr-dev-uk-artifacts-uk
+      - UBLA + Public Access Prevention enabled
+- Bucket-scoped IAM for the SA:
+  • roles/storage.objectAdmin on BOTH buckets (object CRUD only).
+
+-------------------------------------------------------------------------------
+3) Backend: GCS client & smoketests
+-------------------------------------------------------------------------------
+3.1 .env additions
+- File changed: ~/verblizr-backend/.env
+- Why: Make project/bucket names available to code.
+
+Append:
+  GCP_PROJECT_ID=verblizr-dev-uk
+  GCP_REGION=europe-west2
+  GCS_UPLOADS_BUCKET=verblizr-dev-uk-uploads-uk
+  GCS_ARTIFACTS_BUCKET=verblizr-dev-uk-artifacts-uk
+
+3.2 Install SDKs
+- Where: ~/verblizr-backend
+  npm install @google-cloud/storage dotenv
+    -> Adds Storage SDK + dotenv.
+
+3.3 GCS helper + smoketest
+- Files created:
+  • ~/verblizr-backend/src/lib/gcs.mjs — Storage client + helpers (putText/getText).
+  • ~/verblizr-backend/scripts/gcs-smoketest.mjs — write/read round-trip test.
+- Command:
+  node ./scripts/gcs-smoketest.mjs
+    -> Writes and reads a small text object in uploads bucket to verify access.
+
+-------------------------------------------------------------------------------
+4) Secrets via Secret Manager
+-------------------------------------------------------------------------------
+4.1 Create & grant secrets (OpenAI/Stripe; ElevenLabs optional)
+- Secrets created:
+  • openai_api_key
+  • elevenlabs_api_key (optional—we switched to Google TTS)
+  • stripe_secret_key
+  • stripe_webhook_secret
+- Granted read access to SA: roles/secretmanager.secretAccessor
+
+4.2 Dev convenience in .env (local only)
+- File changed: ~/verblizr-backend/.env
+- Keys for local dev (prefer Secret Manager in prod):
+  OPENAI_API_KEY=sk-...
+  ELEVENLABS_API_KEY=
+  STRIPE_SECRET_KEY=sk_test_...
+  STRIPE_WEBHOOK_SECRET=whsec_...
+
+4.3 Secret helper + smoketest
+- Files:
+  • ~/verblizr-backend/src/lib/secrets.mjs — getSecret(name) uses .env first, else Secret Manager.
+  • ~/verblizr-backend/scripts/secret-smoketest.mjs — masked print of values.
+- Command:
+  node ./scripts/secret-smoketest.mjs
+    -> Verifies secrets accessible.
+
+-------------------------------------------------------------------------------
+5) Google Text-to-Speech (Urdu) + Signed URLs
+-------------------------------------------------------------------------------
+5.1 Enable API + install SDK
+  gcloud services enable texttospeech.googleapis.com
+    -> Enables Cloud TTS.
+  cd ~/verblizr-backend && npm install @google-cloud/text-to-speech
+    -> Adds TTS SDK.
+
+5.2 TTS helper + smoketest (upload MP3)
+- Files:
+  • ~/verblizr-backend/src/lib/tts/googleTTS.mjs
+      - Exports:
+         synthesizeToBuffer(...)
+         synthesizeToGCS({ text, objectKey })
+         synthesizeToSignedUrl({ text, prefix, expiresInSeconds })  <-- for signed URLs
+  • ~/verblizr-backend/scripts/tts-smoketest.mjs
+      - Uploads MP3 to artifacts bucket.
+- Command:
+  node ./scripts/tts-smoketest.mjs "urdu text"
+    -> Creates MP3 in gs://...artifacts-uk/tts-smoketest/...
+
+5.3 Signed URL smoketest (needs service account credentials with client_email)
+- Local dev SA key (DO NOT COMMIT):
+  mkdir -p ~/verblizr-backend/.secrets
+  gcloud iam service-accounts keys create ~/verblizr-backend/.secrets/sa-verblizr-api.json \
+    --iam-account=sa-verblizr-api@verblizr-dev-uk.iam.gserviceaccount.com
+  chmod 600 ~/verblizr-backend/.secrets/sa-verblizr-api.json
+    -> Creates a local key for signing V4 URLs in dev.
+
+- Ensure gitignore protects it:
+  (in ~/verblizr-backend/.gitignore) add:
+    .secrets/
+
+- Point SDKs at the key (fish shell example):
+  set -x GOOGLE_APPLICATION_CREDENTIALS ~/verblizr-backend/.secrets/sa-verblizr-api.json
+    -> Ensures Node uses SA credentials with client_email.
+
+- Run:
+  node ./scripts/tts-signedurl-smoketest.mjs
+    -> Prints GS URI + a 1-hour HTTPS signed URL you can open in a browser.
+
+-------------------------------------------------------------------------------
+6) Dev API for the app
+-------------------------------------------------------------------------------
+- File: ~/verblizr-backend/scripts/dev-tts-api.mjs
+  Routes:
+    GET  /__health  -> { ok: true, name: 'dev-tts-api', time: ... }
+    POST /api/tts   -> body { text } => { signedUrl, gsUri, objectKey }
+
+- Dependencies:
+  npm install express cors
+    -> Adds Express server & CORS.
+
+- Start on dedicated port (5055):
+  env PORT=5055 node ./scripts/dev-tts-api.mjs
+    -> Starts server at http://localhost:5055
+
+- Verify:
+  curl -sS http://localhost:5055/__health
+    -> {"ok":true,"name":"dev-tts-api",...}
+
+  curl -sS -X POST http://localhost:5055/api/tts \
+    -H "Content-Type: application/json" \
+    -d '{"text":"...urdu..."}' | jq
+    -> Returns JSON with signedUrl + gsUri + objectKey.
+
+-------------------------------------------------------------------------------
+7) Frontend wiring (base only; no UI yet)
+-------------------------------------------------------------------------------
+- File: ~/verblizerRN/src/config/api.ts
+  export const API_BASE =
+    __DEV__ ? 'http://127.0.0.1:5055' : 'https://YOUR_PROD_API_HOST';
+  Note: On physical device testing, change 127.0.0.1 to your Mac’s LAN IP.
+
+- File: ~/verblizerRN/src/features/tts/api.ts
+  export async function createTtsSignedUrl(text: string): Promise<string> { /* POST /api/tts */ }
+
+-------------------------------------------------------------------------------
+Troubleshooting handled
+-------------------------------------------------------------------------------
+- PERMISSION_DENIED: serviceusage.googleapis.com -> Enabled Service Usage API.
+- Compute API prompt -> Enabled when asked.
+- gcloud beta required -> Installed beta component.
+- gcloud storage flags -> Removed deprecated --no-permanently-delete-objects.
+- fish shell vs export -> Used 'set -x' for GOOGLE_APPLICATION_CREDENTIALS.
+- Cannot sign data without client_email -> Pointed Node to SA key JSON in .secrets.
+- 404 on /api/tts -> Port mismatch; standardized on PORT=5055 and added /__health.
+
+-------------------------------------------------------------------------------
+Next step (not included here)
+-------------------------------------------------------------------------------
+- Add a temporary “Test Google TTS” button in ~/verblizerRN/src/screens/DashboardScreen.tsx
+  that calls createTtsSignedUrl(...) and opens the signed URL to play audio.
