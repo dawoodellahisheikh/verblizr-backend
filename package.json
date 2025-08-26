@@ -3,8 +3,12 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js",
+    "start": "node start-all.js",
+    "start:http": "node index.js",
+    "start:websocket": "node websocket-server.js",
+    "dev": "nodemon start-all.js",
+    "dev:http": "nodemon index.js",
+    "dev:websocket": "nodemon websocket-server.js",
     "test": "echo \"Error: no test specified\" && exit 1",
     "audit-fix": "npm audit fix",
     "security-check": "npm audit --audit-level moderate"
@@ -30,6 +34,7 @@
     "openai": "^4.67.3",
     "pdfkit": "^0.15.0",
     "stripe": "^17.3.1",
+    "ws": "^8.18.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
