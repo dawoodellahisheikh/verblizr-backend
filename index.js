@@ -3,6 +3,8 @@ require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const { z } = require("zod");
@@ -12,9 +14,66 @@ console.log("[boot]", { file: __filename, cwd: process.cwd() });
 
 const app = express();
 
+// Security middleware
+app.use(helmet({
+	crossOriginEmbedderPolicy: false,
+	contentSecurityPolicy: {
+		directives: {
+			defaultSrc: ["'self'"],
+			styleSrc: ["'self'", "'unsafe-inline'"],
+			scriptSrc: ["'self'"],
+			imgSrc: ["'self'", "data:", "https:"],
+			connectSrc: ["'self'", "https:"],
+		},
+	},
+}));
+
+// Rate limiting
+const limiter = rateLimit({
+	windowMs: 15 * 60 * 1000, // 15 minutes
+	max: 1000, // Limit each IP to 1000 requests per windowMs
+	message: {
+		success: false,
+		error: 'Too many requests from this IP, please try again later.',
+		retryAfter: '15 minutes'
+	},
+	standardHeaders: true,
+	legacyHeaders: false,
+});
+
+// API-specific rate limiting
+const apiLimiter = rateLimit({
+	windowMs: 15 * 60 * 1000, // 15 minutes
+	max: 500, // Limit each IP to 500 API requests per windowMs
+	message: {
+		success: false,
+		error: 'API rate limit exceeded, please try again later.',
+		retryAfter: '15 minutes'
+	}
+});
+
+// TTS-specific rate limiting (more restrictive due to cost)
+const ttsLimiter = rateLimit({
+	windowMs: 15 * 60 * 1000, // 15 minutes
+	max: 100, // Limit each IP to 100 TTS requests per windowMs
+	message: {
+		success: false,
+		error: 'TTS rate limit exceeded, please try again later.',
+		retryAfter: '15 minutes'
+	}
+});
+
+// Apply rate limiting
+app.use(limiter);
+app.use('/api', apiLimiter);
+app.use('/api/tts', ttsLimiter);
+app.use('/api/openai', ttsLimiter); // Same limit for OpenAI due to cost
+app.use('/api/gcp', ttsLimiter); // Same limit for GCP due to cost
+
 // CORS + JSON body
 app.use(cors({ origin: true, credentials: true }));
-app.use(express.json());
+app.use(express.json({ limit: '10mb' })); // Increased limit for file uploads
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
@@ -335,4 +394,66 @@ app.use("/", invoiceRoutes);
 
 console.log("[server] Invoice routes mounted at /api/* and /*");
 
-app.listen(PORT, () => console.log(`API running on http://localhost:${PORT}`));
+// Import and mount new API routes
+const ttsRoutes = require('./routes/tts');
+const openaiRoutes = require('./routes/openai');
+const gcpRoutes = require('./routes/gcp');
+
+// Mount TTS routes
+app.use('/api/tts', ttsRoutes);
+console.log('[server] TTS routes mounted at /api/tts');
+
+// Mount OpenAI routes
+app.use('/api/openai', openaiRoutes);
+console.log('[server] OpenAI routes mounted at /api/openai');
+
+// Mount GCP routes
+app.use('/api/gcp', gcpRoutes);
+console.log('[server] GCP routes mounted at /api/gcp');
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+	res.json({
+		status: 'healthy',
+		timestamp: new Date().toISOString(),
+		version: '1.0.0',
+		services: {
+			auth: true,
+			billing: true,
+			tts: true,
+			openai: true,
+			gcp: true
+		}
+	});
+});
+
+// Global error handler
+app.use((error, req, res, next) => {
+	console.error('[server] Unhandled error:', error);
+	res.status(500).json({
+		success: false,
+		error: 'Internal server error',
+		timestamp: new Date().toISOString()
+	});
+});
+
+// 404 handler
+app.use('*', (req, res) => {
+	res.status(404).json({
+		success: false,
+		error: 'Endpoint not found',
+		path: req.originalUrl,
+		method: req.method
+	});
+});
+
+app.listen(PORT, () => {
+	console.log(`🚀 Verblizr API Server running on http://localhost:${PORT}`);
+	console.log('📋 Available endpoints:');
+	console.log('  - Auth: /api/auth/*');
+	console.log('  - Billing: /api/billing/*');
+	console.log('  - TTS: /api/tts/*');
+	console.log('  - OpenAI: /api/openai/*');
+	console.log('  - GCP: /api/gcp/*');
+	console.log('  - Health: /health');
+});
