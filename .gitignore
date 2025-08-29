@@ -25,3 +25,5 @@ Thumbs.db
 *.seed
 *.log
 logs/
+verblizr-sa.json
+.env.example
